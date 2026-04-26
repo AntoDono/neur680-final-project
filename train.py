@@ -37,12 +37,13 @@ def pretrain_on_ppmi() -> None:
     X = df[feature_cols].values.astype("float32")
     y = df["label"].values.astype("float32")
 
-    train_loader, test_loader, scaler = make_loaders(X, y)
+    train_loader, test_loader, scaler, _ = make_loaders(X, y)
 
     model = TabularTransformer(num_features=len(feature_cols)).to(device)
     print(f"\nFeatures: {len(feature_cols)} | Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    train_one_stage(model, train_loader, device, label="PPMI pretrain")
+    train_one_stage(model, train_loader, device,
+                    num_epochs=config.PRETRAIN_EPOCHS, label="PPMI pretrain")
     evaluate(model, test_loader, device, label="PPMI pretrain")
 
     torch.save(
@@ -65,7 +66,8 @@ def finetune_on_lab() -> None:
     feature_cols = [c for c in feature_cols if c in df.dropna(axis=1).columns]
     y = df["label"].values.astype("float32")
 
-    train_loader, test_loader, scaler = make_loaders(X, y)
+    train_loader, test_loader, scaler, test_indices = make_loaders(X, y)
+    test_subject_ids = df.index[test_indices].tolist()
 
     model = TabularTransformer(num_features=len(feature_cols)).to(device)
     print(f"\nFeatures: {len(feature_cols)} | Parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -80,9 +82,12 @@ def finetune_on_lab() -> None:
         print("No pretrain checkpoint found — training from scratch.")
         ft_lr = config.LR
 
-    train_one_stage(model, train_loader, device, lr=ft_lr, label="Lab finetune")
-    evaluate(model, test_loader, device, label="Lab finetune")
-    plot_attention_maps(model, scaler, feature_cols, device)
+    result  = train_one_stage(model, train_loader, device, lr=ft_lr,
+                              num_epochs=config.FINETUNE_EPOCHS, label="Lab finetune")
+    metrics = evaluate(model, test_loader, device, label="Lab finetune")
+    metrics["best_loss"] = result["best_loss"]
+    plot_attention_maps(model, scaler, feature_cols, device,
+                        test_subject_ids=test_subject_ids, metrics=metrics)
 
 
 def main() -> None:

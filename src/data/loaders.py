@@ -27,7 +27,7 @@ def make_loaders(
     X: np.ndarray,
     y: np.ndarray,
     scaler: StandardScaler | None = None,
-) -> tuple[DataLoader, DataLoader, StandardScaler]:
+) -> tuple[DataLoader, DataLoader, StandardScaler, np.ndarray]:
     """
     Split, scale, undersample the majority class, and return DataLoaders.
 
@@ -41,10 +41,11 @@ def make_loaders(
 
     Returns
     -------
-    train_loader, test_loader, scaler
+    train_loader, test_loader, scaler, test_indices
     """
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
+    indices = np.arange(len(y))
+    X_train, X_test, y_train, y_test, _, test_indices = train_test_split(
+        X, y, indices,
         test_size=config.TEST_SIZE,
         random_state=config.RANDOM_SEED,
         stratify=y,
@@ -77,4 +78,4 @@ def make_loaders(
         batch_size=config.BATCH_SIZE,
         shuffle=False,
     )
-    return train_loader, test_loader, scaler
+    return train_loader, test_loader, scaler, test_indices
