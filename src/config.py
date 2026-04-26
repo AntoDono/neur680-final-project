@@ -1,9 +1,9 @@
 TEST_SIZE    = 0.2
 RANDOM_SEED  = 42
 
-D_MODEL      = 512
-NHEAD        = 16
-NUM_LAYERS   = 8
+D_MODEL      = 1024
+NHEAD        = 32
+NUM_LAYERS   = 6
 DROPOUT      = 0.1
 
 BATCH_SIZE   = 128
