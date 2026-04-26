@@ -1,0 +1,13 @@
+TEST_SIZE    = 0.4
+RANDOM_SEED  = 42
+
+D_MODEL      = 128
+NHEAD        = 8
+NUM_LAYERS   = 4
+DROPOUT      = 0.1
+
+BATCH_SIZE   = 32
+NUM_EPOCHS   = 500
+LR           = 1e-4
+
+PATIENCE     = 1000
