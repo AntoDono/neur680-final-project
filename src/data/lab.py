@@ -1,13 +1,19 @@
 """Load and preprocess the lab (in-house FreeSurfer) dataset."""
 
+import os
+
 import pandas as pd
 
 from src.data.normalize import canonicalize_lab_aseg, aseg_common_features
 
-RAW_DIR = "raw_data/lab"
+RAW_DIR       = "raw_data/lab"
+PROCESSED_DIR = "processed_data"
 
 
-def load_lab(raw_dir: str = RAW_DIR) -> tuple[pd.DataFrame, list[str], list[str]]:
+def load_lab(
+    raw_dir: str = RAW_DIR,
+    processed_dir: str = PROCESSED_DIR,
+) -> tuple[pd.DataFrame, list[str], list[str]]:
     """
     Load the lab dataset and return a processed DataFrame.
 
@@ -54,8 +60,18 @@ def load_lab(raw_dir: str = RAW_DIR) -> tuple[pd.DataFrame, list[str], list[str]
     result = result.loc[:, ~result.columns.duplicated()]
     result = result.dropna(axis=1, how="all")
 
+    _save_processed(result, source="lab", processed_dir=processed_dir)
     _print_summary("Lab", result)
     return result, aseg_cols, thickness_cols
+
+
+def _save_processed(df: pd.DataFrame, source: str, processed_dir: str) -> None:
+    out = df.copy()
+    out.insert(0, "source", source)
+    os.makedirs(processed_dir, exist_ok=True)
+    path = os.path.join(processed_dir, f"{source}.csv")
+    out.to_csv(path)
+    print(f"[Lab] Processed data saved → {path}")
 
 
 def _print_summary(name: str, df: pd.DataFrame) -> None:

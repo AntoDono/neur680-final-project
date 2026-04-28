@@ -1,14 +1,16 @@
 """TabularTransformer: feature-as-token transformer for tabular brain data.
 
-Each input feature is treated as one token (scalar → projected to d_model).
-A learnable CLS token is prepended; its final hidden state is used for
-binary classification (PD vs HC).
+Each input feature is treated as one token (scalar → projected to d_model),
+with a learned per-feature identity embedding added so the model knows which
+biomarker each token represents.  All feature token outputs are pooled via a
+learned attention query, and the resulting representation is classified by a
+small MLP.
 
-Because there is no positional embedding, the model is permutation-equivariant
-and can be applied to any number of features — useful for loading a checkpoint
-trained on PPMI (ASEG-only, ~64 features) and fine-tuning on lab data
-(ASEG + thickness, ~137 features) without architectural changes.
+Because the identity embeddings are indexed by position (not value), the model
+is not permutation-equivariant, but feature_cols ordering is kept fixed.
 """
+
+import math
 
 import torch
 import torch.nn as nn
@@ -27,21 +29,45 @@ class TabularTransformer(nn.Module):
     ):
         super().__init__()
         self.feature_proj = nn.Linear(1, d_model)
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+
+        # Per-feature identity embeddings — tells the model which biomarker
+        # each token represents regardless of its scalar value
+        self.feature_embed = nn.Embedding(num_features, d_model)
+
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dropout=dropout,
             dim_feedforward=d_model * 4,
             batch_first=True,
+            norm_first=True,        # pre-norm: easier to train from scratch
+            activation="gelu",
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.head = nn.Linear(d_model, 1)
+
+        # Attention pooling query — small random init avoids symmetry-breaking issues
+        self.attn_pool_query = nn.Parameter(torch.randn(d_model) * 0.02)
+        self._scale = math.sqrt(d_model)
+
+        self.head = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, d_model // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, 1),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, F = x.shape
-        x   = self.feature_proj(x.unsqueeze(-1))       # (B, F, d_model)
-        cls = self.cls_token.expand(B, -1, -1)          # (B, 1, d_model)
-        x   = torch.cat([cls, x], dim=1)               # (B, F+1, d_model)
-        x   = self.transformer(x)
-        return self.head(x[:, 0, :]).squeeze(-1)        # (B,)
+        feat_idx = torch.arange(F, device=x.device)
+
+        h = self.feature_proj(x.unsqueeze(-1))      # (B, F, d_model)
+        h = h + self.feature_embed(feat_idx)         # (B, F, d_model)
+        h = self.transformer(h)                      # (B, F, d_model)
+
+        # Attention pooling
+        scores  = torch.einsum("d,bfd->bf", self.attn_pool_query, h) / self._scale
+        weights = torch.softmax(scores, dim=-1)      # (B, F)
+        pooled  = torch.einsum("bf,bfd->bd", weights, h)  # (B, d_model)
+
+        return self.head(pooled).squeeze(-1)          # (B,)

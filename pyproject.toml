@@ -13,4 +13,8 @@ dependencies = [
     "imbalanced-learn",
     "torch",
     "openpyxl>=3.1.5",
+    "tqdm>=4.67.1",
+    "neurocombat>=0.2.12",
+    "openneuro-py>=2026.4.1",
+    "huggingface-hub>=1.12.0",
 ]

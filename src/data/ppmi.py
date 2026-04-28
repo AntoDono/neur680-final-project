@@ -13,7 +13,8 @@ import pandas as pd
 
 from src.data.normalize import canonicalize_ppmi_aseg
 
-RAW_DIR = "raw_data/ppmi"
+RAW_DIR       = "raw_data/ppmi"
+PROCESSED_DIR = "processed_data"
 
 # Subgroups treated as confirmed PD
 _PD_SUBGROUPS = {
@@ -31,7 +32,10 @@ _HC_SUBGROUPS = {"Healthy Control", "Normosmic"}
 # Everything else (Hyposmia, RBD, SWEDD, PRKN + RBD, …) is excluded
 
 
-def load_ppmi(raw_dir: str = RAW_DIR) -> tuple[pd.DataFrame, list[str]]:
+def load_ppmi(
+    raw_dir: str = RAW_DIR,
+    processed_dir: str = PROCESSED_DIR,
+) -> tuple[pd.DataFrame, list[str]]:
     """
     Load the PPMI baseline dataset.
 
@@ -85,8 +89,18 @@ def load_ppmi(raw_dir: str = RAW_DIR) -> tuple[pd.DataFrame, list[str]]:
     result.index.name = "subject_id"
     result = result.dropna()
 
+    _save_processed(result, source="ppmi", processed_dir=processed_dir)
     _print_summary("PPMI", result)
     return result, aseg_cols
+
+
+def _save_processed(df: pd.DataFrame, source: str, processed_dir: str) -> None:
+    out = df.copy()
+    out.insert(0, "source", source)
+    os.makedirs(processed_dir, exist_ok=True)
+    path = os.path.join(processed_dir, f"{source}.csv")
+    out.to_csv(path)
+    print(f"[PPMI] Processed data saved → {path}")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

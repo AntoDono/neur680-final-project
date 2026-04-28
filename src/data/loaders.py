@@ -1,9 +1,7 @@
 """PyTorch Dataset, DataLoader, and balanced-split helpers."""
 
 import numpy as np
-import pandas as pd
 import torch
-from imblearn.under_sampling import RandomUnderSampler
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, Dataset
@@ -41,7 +39,9 @@ def make_loaders(
 
     Returns
     -------
-    train_loader, test_loader, scaler, test_indices
+    train_loader, test_loader, scaler, test_indices, pos_weight
+    pos_weight is a scalar tensor = n_hc / n_pd (original training split),
+    passed to BCEWithLogitsLoss to down-weight the majority PD class.
     """
     indices = np.arange(len(y))
     X_train, X_test, y_train, y_test, _, test_indices = train_test_split(
@@ -58,18 +58,13 @@ def make_loaders(
 
     n_pd = int(y_train.sum())
     n_hc = int((1 - y_train).sum())
-    print(f"  Train before balance: HC={n_hc} PD={n_pd} | Test: {len(y_test)}")
+    print(f"  Train: HC={n_hc} PD={n_pd} | Test: {len(y_test)}")
 
-    # Undersample majority class down to minority class count
-    rus = RandomUnderSampler(random_state=config.RANDOM_SEED)
-    X_train_bal, y_train_bal = rus.fit_resample(X_train, y_train)
-
-    n_pd_b = int(y_train_bal.sum())
-    n_hc_b = int((1 - y_train_bal).sum())
-    print(f"  Train after balance:  HC={n_hc_b} PD={n_pd_b}")
+    # full inverse ratio — aggressively up-weights HC to counteract imbalance
+    pos_weight = torch.tensor([n_hc / n_pd], dtype=torch.float32)
 
     train_loader = DataLoader(
-        BrainDataset(X_train_bal, y_train_bal),
+        BrainDataset(X_train, y_train),
         batch_size=config.BATCH_SIZE,
         shuffle=True,
     )
@@ -78,4 +73,4 @@ def make_loaders(
         batch_size=config.BATCH_SIZE,
         shuffle=False,
     )
-    return train_loader, test_loader, scaler, test_indices
+    return train_loader, test_loader, scaler, test_indices, pos_weight

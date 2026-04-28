@@ -1,110 +1,72 @@
-"""Entry point for two-stage training.
+"""Train a single TabularTransformer on the combined PPMI + Lab + OASIS-3 dataset.
+
+Data preparation (runs automatically on each invocation)
+---------------------------------------------------------
+Each source loader processes its raw data and writes a per-source CSV to
+processed_data/ before merging:
+
+    processed_data/ppmi.csv    ← raw_data/ppmi/
+    processed_data/lab.csv     ← raw_data/lab/
+    processed_data/oasis3.csv  ← raw_data/oasis3/healthy/*/aseg.stats
+                                  (empty if not yet downloaded; see
+                                   raw_data/oasis3/aseg_lh_rh_download_oasis_freesurfer.sh)
+
+The three sources are then merged on their common canonical ASEG features,
+ComBat-harmonized across sites, and fed to the TabularTransformer.
 
 Usage
 -----
-    python train.py --stage pretrain   # PPMI → checkpoints/ppmi_pretrained.pt
-    python train.py --stage finetune   # load checkpoint, fine-tune on lab
-    python train.py --stage both       # default: pretrain then finetune
+    python train.py
 """
 
-import argparse
 import os
 import torch
 
 from src import config
-from src.data.lab import load_lab
-from src.data.ppmi import load_ppmi
-from src.data.normalize import aseg_common_features
+from src.data.combined import load_combined
 from src.data.loaders import make_loaders
 from src.model import TabularTransformer
 from src.trainer import train_one_stage, evaluate
-from src.attention import plot_attention_maps
+from src.attention import plot_attention_maps, print_attention_ranking
 
-CHECKPOINT = "checkpoints/ppmi_pretrained.pt"
+CHECKPOINT = "checkpoints/combined.pt"
 os.makedirs("checkpoints", exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def pretrain_on_ppmi() -> None:
+def train_combined() -> None:
     print("\n" + "=" * 60)
-    print("STAGE 1: Pretrain on PPMI (ASEG volumes)")
+    print("Training on combined PPMI + Lab + OASIS-3 dataset")
     print("=" * 60)
 
-    df, aseg_cols = load_ppmi()
-    feature_cols  = aseg_cols + ["Age", "Sex"]
+    df, feature_cols = load_combined()
 
     X = df[feature_cols].values.astype("float32")
     y = df["label"].values.astype("float32")
 
-    train_loader, test_loader, scaler, _ = make_loaders(X, y)
-
-    model = TabularTransformer(num_features=len(feature_cols)).to(device)
-    print(f"\nFeatures: {len(feature_cols)} | Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-    train_one_stage(model, train_loader, device,
-                    num_epochs=config.PRETRAIN_EPOCHS, label="PPMI pretrain")
-    evaluate(model, test_loader, device, label="PPMI pretrain")
-
-    torch.save(
-        {"state_dict": model.state_dict(), "feature_cols": feature_cols},
-        CHECKPOINT,
-    )
-    print(f"\nCheckpoint saved → {CHECKPOINT}")
-
-
-def finetune_on_lab() -> None:
-    print("\n" + "=" * 60)
-    print("STAGE 2: Fine-tune on Lab (ASEG + cortical thickness)")
-    print("=" * 60)
-
-    df, aseg_cols, thickness_cols = load_lab()
-    feature_cols = aseg_cols + thickness_cols + ["Age", "Sex"]
-    feature_cols = [c for c in feature_cols if c in df.columns]
-
-    X = df[feature_cols].dropna(axis=1).values.astype("float32")
-    feature_cols = [c for c in feature_cols if c in df.dropna(axis=1).columns]
-    y = df["label"].values.astype("float32")
-
-    train_loader, test_loader, scaler, test_indices = make_loaders(X, y)
+    train_loader, test_loader, scaler, test_indices, pos_weight = make_loaders(X, y)
     test_subject_ids = df.index[test_indices].tolist()
 
     model = TabularTransformer(num_features=len(feature_cols)).to(device)
-    print(f"\nFeatures: {len(feature_cols)} | Parameters: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"\nFeatures: {len(feature_cols)} | "
+          f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Load pretrained weights if checkpoint exists
-    if os.path.exists(CHECKPOINT):
-        ckpt = torch.load(CHECKPOINT, map_location=device)
-        model.load_state_dict(ckpt["state_dict"])
-        print(f"Loaded pretrained weights from {CHECKPOINT}")
-        ft_lr = config.LR * 0.3   # smaller LR for fine-tuning
-    else:
-        print("No pretrain checkpoint found — training from scratch.")
-        ft_lr = config.LR
-
-    result  = train_one_stage(model, train_loader, device, lr=ft_lr,
-                              num_epochs=config.FINETUNE_EPOCHS, label="Lab finetune")
-    metrics = evaluate(model, test_loader, device, label="Lab finetune")
+    result  = train_one_stage(model, train_loader, device,
+                              num_epochs=config.PRETRAIN_EPOCHS,
+                              pos_weight=pos_weight, label="Combined")
+    metrics = evaluate(model, test_loader, device, label="Combined")
     metrics["best_loss"] = result["best_loss"]
+
+    torch.save({"state_dict": model.state_dict(), "feature_cols": feature_cols},
+               CHECKPOINT)
+    print(f"\nCheckpoint saved → {CHECKPOINT}")
+
     plot_attention_maps(model, scaler, feature_cols, device,
                         test_subject_ids=test_subject_ids, metrics=metrics)
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description="PD vs HC transformer training")
-    ap.add_argument(
-        "--stage",
-        choices=["pretrain", "finetune", "both"],
-        default="both",
-        help="Which training stage to run (default: both)",
-    )
-    args = ap.parse_args()
-
-    if args.stage in ("pretrain", "both"):
-        pretrain_on_ppmi()
-    if args.stage in ("finetune", "both"):
-        finetune_on_lab()
+    print_attention_ranking(model, scaler, feature_cols, device,
+                            test_subject_ids=test_subject_ids)
 
 
 if __name__ == "__main__":
-    main()
+    train_combined()

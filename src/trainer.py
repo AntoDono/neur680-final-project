@@ -8,6 +8,7 @@ from sklearn.metrics import (
     accuracy_score, classification_report, confusion_matrix, precision_recall_fscore_support,
 )
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from src import config
 
@@ -20,6 +21,7 @@ def train_one_stage(
     num_epochs: int = config.PRETRAIN_EPOCHS,
     lr: float = config.LR,
     patience: int = config.PATIENCE,
+    pos_weight: torch.Tensor | None = None,
     label: str = "",
 ) -> dict:
     """
@@ -27,7 +29,8 @@ def train_one_stage(
 
     Returns the best model state_dict (by training loss).
     """
-    criterion  = nn.BCEWithLogitsLoss()
+    pw        = pos_weight.to(device) if pos_weight is not None else None
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pw)
     optimizer  = torch.optim.Adam(model.parameters(), lr=lr)
 
     best_loss      = float("inf")
@@ -35,7 +38,8 @@ def train_one_stage(
     patience_count = 0
     prefix         = f"[{label}] " if label else ""
 
-    for epoch in range(num_epochs):
+    pbar = tqdm(range(num_epochs), desc=f"{prefix}training", unit="ep", dynamic_ncols=True)
+    for epoch in pbar:
         model.train()
         total_loss = 0.0
 
@@ -48,6 +52,7 @@ def train_one_stage(
             total_loss += loss.item()
 
         avg_loss = total_loss / len(train_loader)
+        pbar.set_postfix(loss=f"{avg_loss:.4f}", best=f"{best_loss:.4f}", patience=patience_count)
 
         if avg_loss < best_loss:
             best_loss      = avg_loss
@@ -56,14 +61,11 @@ def train_one_stage(
         else:
             patience_count += 1
             if patience_count >= patience:
-                print(f"{prefix}Early stopping at epoch {epoch + 1}  best loss: {best_loss:.4f}")
+                tqdm.write(f"{prefix}Early stopping at epoch {epoch + 1}  best loss: {best_loss:.4f}")
                 break
 
-        if (epoch + 1) % 20 == 0:
-            print(f"{prefix}Epoch {epoch + 1}/{num_epochs}  loss: {avg_loss:.4f}")
-
     model.load_state_dict(best_state)
-    print(f"{prefix}Restored best model (loss {best_loss:.4f})")
+    tqdm.write(f"{prefix}Restored best model (loss {best_loss:.4f})")
     return {"state_dict": best_state, "best_loss": best_loss}
 
 
@@ -95,7 +97,7 @@ def evaluate(
 
     print(f"\n{prefix}Accuracy: {acc:.3f}")
     print()
-    print(classification_report(all_labels, all_preds, target_names=["HC", "PD"]))
+    print(classification_report(all_labels, all_preds, target_names=["HC", "PD"], zero_division=0))
     print(f"{prefix}Confusion matrix (rows=true, cols=pred):")
     print(pd.DataFrame(
         confusion_matrix(all_labels, all_preds),

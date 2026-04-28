@@ -27,8 +27,7 @@ def extract_attention_matrix(
 
     Returns
     -------
-    list of np.ndarray, shape (n_tokens, n_tokens) per layer,
-    where n_tokens = 1 (CLS) + n_features.
+    list of np.ndarray, shape (n_features, n_features) per layer.
     attn[i, j] = weight token-i places on token-j.
     """
     model.eval()
@@ -37,17 +36,15 @@ def extract_attention_matrix(
 
     with torch.no_grad():
         B, F = x.shape
-        h   = model.feature_proj(x.unsqueeze(-1))   # (1, F, d_model)
-        cls = model.cls_token.expand(B, -1, -1)      # (1, 1, d_model)
-        h   = torch.cat([cls, h], dim=1)             # (1, F+1, d_model)
+        h = model.feature_proj(x.unsqueeze(-1))   # (1, F, d_model)
 
         for layer in model.transformer.layers:
             h2, attn_w = layer.self_attn(
                 h, h, h,
                 need_weights=True,
-                average_attn_weights=True,   # (1, F+1, F+1)
+                average_attn_weights=True,   # (1, F, F)
             )
-            attn_matrices.append(attn_w[0].cpu().numpy())   # (F+1, F+1)
+            attn_matrices.append(attn_w[0].cpu().numpy())   # (F, F)
 
             # Replicate TransformerEncoderLayer forward (post-norm)
             h = h + layer.dropout1(h2)
@@ -112,7 +109,7 @@ def plot_attention_maps(
                 .replace("Left_", "L-")
                 .replace("Right_", "R-"))
 
-    tok_labels = ["CLS"] + [shorten(f) for f in available]
+    tok_labels = [shorten(f) for f in available]
     n_tokens   = len(tok_labels)
 
     # Numeric tick labels on the heatmap axes (every 20 tokens)
@@ -162,7 +159,7 @@ def plot_attention_maps(
     # Main title
     ax_met.text(
         0.5, 0.92,
-        f"Attention Maps ({n_tokens}×{n_tokens} tokens) — All {config.NUM_LAYERS} Layers"
+        f"Attention Maps ({n_tokens} feature tokens) — All {config.NUM_LAYERS} Layers"
         "        Left: HC  ·  Right: PD",
         transform=ax_met.transAxes,
         ha="center", va="top", fontsize=11, fontweight="bold", color="#1a1a2e",
@@ -376,3 +373,63 @@ def plot_attention_maps(
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.show()
     print(f"Attention matrix shape: {n_tokens}×{n_tokens}  |  Saved → {out_path}")
+
+
+def print_attention_ranking(
+    model,
+    scaler: StandardScaler,
+    feature_cols: list[str],
+    device: torch.device,
+    test_subject_ids: list[str] | None = None,
+) -> None:
+    """
+    Print features ranked by mean attention received, averaged across all
+    transformer layers and all test subjects (most → least attended).
+
+    attn[i, j] = weight query-i places on key-j, so column-j sum gives
+    total attention token-j receives from all other tokens.
+    """
+    raw = pd.read_csv("processed_data/patient_data.csv", index_col=0)
+    raw2 = raw.drop(columns=[c for c in ["Code", "Group", "BrainSegVolNotVent_y",
+                                          "eTIV_x", "eTIV_y"]
+                              if c in raw.columns]).copy()
+    raw2["Sex"] = (raw2["Sex"] == "M").astype(int)
+
+    aligned = pd.DataFrame(0.0, index=raw2.index, columns=feature_cols)
+    for c in feature_cols:
+        if c in raw2.columns:
+            aligned[c] = raw2[c].values
+    X_all = scaler.transform(aligned.values.astype("float32"))
+    idx_map = {sid: i for i, sid in enumerate(raw.index)}
+
+    subject_ids = test_subject_ids if test_subject_ids is not None else list(raw.index)
+    subject_ids = [s for s in subject_ids if s in idx_map]
+
+    # Accumulate column-sum attention per feature across all subjects × layers
+    # feature tokens are indices 1..n_features (index 0 is CLS)
+    n_features = len(feature_cols)
+    total_attention = np.zeros(n_features)
+    count = 0
+
+    for sid in subject_ids:
+        attn_matrices = extract_attention_matrix(model, X_all[idx_map[sid]], device)
+        for attn in attn_matrices:                  # attn: (F, F)
+            total_attention += attn.sum(axis=0)          # sum over all query rows
+            count += 1
+
+    mean_attention = total_attention / count
+
+    ranked = sorted(
+        zip(feature_cols, mean_attention),
+        key=lambda x: x[1],
+        reverse=True,
+    )
+
+    print("\n" + "=" * 60)
+    print(f"Feature attention ranking  ({len(subject_ids)} subjects, "
+          f"{count // len(subject_ids)} layers each)")
+    print(f"{'Rank':<6}{'Feature':<45}{'Mean Attention':>14}")
+    print("-" * 65)
+    for rank, (feat, score) in enumerate(ranked, 1):
+        print(f"{rank:<6}{feat:<45}{score:>14.6f}")
+    print("=" * 60)
