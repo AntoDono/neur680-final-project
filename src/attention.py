@@ -381,13 +381,17 @@ def print_attention_ranking(
     feature_cols: list[str],
     device: torch.device,
     test_subject_ids: list[str] | None = None,
-) -> None:
+) -> list[tuple[str, float]]:
     """
-    Print features ranked by mean attention received, averaged across all
-    transformer layers and all test subjects (most → least attended).
+    Print and return features ranked by mean attention received, averaged
+    across all transformer layers and all test subjects (most → least attended).
 
     attn[i, j] = weight query-i places on key-j, so column-j sum gives
     total attention token-j receives from all other tokens.
+
+    Returns
+    -------
+    ranked : list of (feature_name, mean_attention_score), highest first.
     """
     raw = pd.read_csv("processed_data/patient_data.csv", index_col=0)
     raw2 = raw.drop(columns=[c for c in ["Code", "Group", "BrainSegVolNotVent_y",
@@ -433,3 +437,4 @@ def print_attention_ranking(
     for rank, (feat, score) in enumerate(ranked, 1):
         print(f"{rank:<6}{feat:<45}{score:>14.6f}")
     print("=" * 60)
+    return ranked

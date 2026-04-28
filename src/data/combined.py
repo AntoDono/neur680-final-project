@@ -2,17 +2,19 @@
 
 Each loader (load_ppmi, load_lab, load_oasis3) processes its raw source and
 writes a per-source CSV to processed_data/.  This module reads those results,
-aligns them on the common canonical ASEG feature set, imputes missing Age/Sex
-(OASIS-3 aseg.stats contains no demographics), and optionally applies ComBat
-harmonization across all present sites before returning a single DataFrame
-ready for model training.
+aligns them on the common canonical ASEG feature set, and imputes missing
+Age/Sex for OASIS-3 rows (not present in that export).
 
-OASIS-3 degrades gracefully: if no valid stats files have been downloaded yet,
+ComBat harmonization is NOT applied here.  It is applied inside make_loaders()
+(src/data/loaders.py) *after* the train/test split so that batch-effect
+correction parameters are estimated from training subjects only and applied
+as frozen transforms to the held-out test set.
+
+OASIS-3 degrades gracefully: if no valid data has been downloaded yet,
 load_oasis3() returns an empty DataFrame and training continues on PPMI + Lab.
 """
 
 import pandas as pd
-from neuroCombat import neuroCombat
 
 from src import config
 from src.data.lab import load_lab
@@ -82,8 +84,7 @@ def load_combined() -> tuple[pd.DataFrame, list[str]]:
     df = pd.concat(frames, axis=0)
     df = df.dropna(subset=feature_cols)
 
-    if config.USE_COMBAT:
-        df = _apply_combat(df, feature_cols)
+    # ComBat is applied later in make_loaders(), after the train/test split.
 
     n_ppmi  = int((df["source"] == "ppmi").sum())
     n_lab   = int((df["source"] == "lab").sum())
@@ -100,42 +101,3 @@ def load_combined() -> tuple[pd.DataFrame, list[str]]:
     )
 
     return df, feature_cols
-
-
-def _apply_combat(df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
-    """
-    Apply ComBat harmonization to remove site/scanner effects.
-
-    Harmonizes the neuroimaging features (all feature_cols except Age and Sex)
-    using 'source' (ppmi / lab / oasis3) as the batch variable, preserving
-    label, Age, and Sex as biological covariates.
-
-    If only one site is present after filtering, ComBat is skipped.
-    """
-    n_sites = df["source"].nunique()
-    if n_sites < 2:
-        print("[ComBat] Only one site present — skipping harmonization.")
-        return df
-
-    imaging_feats = [f for f in feature_cols if f not in ("Age", "Sex")]
-
-    covars = df[["source", "label", "Age", "Sex"]].copy()
-    covars["Sex"]   = covars["Sex"].astype(int)
-    covars["label"] = covars["label"].astype(int)
-
-    dat = df[imaging_feats].values.T  # neuroCombat expects (features, subjects)
-
-    result = neuroCombat(
-        dat=dat,
-        covars=covars,
-        batch_col="source",
-        categorical_cols=["label", "Sex"],
-        continuous_cols=["Age"],
-    )
-
-    df = df.copy()
-    df[imaging_feats] = result["data"].T
-    site_list = " / ".join(sorted(covars["source"].unique()))
-    print(f"[ComBat] Harmonized {len(imaging_feats)} features across "
-          f"{n_sites} sites ({site_list})")
-    return df

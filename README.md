@@ -187,16 +187,20 @@ All cohorts are parcellated with the **Desikan-Killiany atlas** via **FreeSurfer
 
 ## Installation
 
-Requires **Python ≥ 3.14**.
+Requires **Python ≥ 3.14** and [uv](https://docs.astral.sh/uv/).
 
 ```bash
 git clone <repo-url>
 cd neur680-final-project
 
-python -m venv .venv
+uv sync          # creates .venv and installs all dependencies from pyproject.toml
 source .venv/bin/activate
+```
 
-pip install -e .
+To add a new dependency:
+
+```bash
+uv add <package>
 ```
 
 Key dependencies (see `pyproject.toml`):
@@ -209,6 +213,29 @@ Key dependencies (see `pyproject.toml`):
 | `pandas` | Data loading and merging |
 | `matplotlib` | Figures and attention maps |
 | `openpyxl` | Reading PPMI curated Excel file |
+| `nilearn` | Brain visualization and AAL atlas download |
+| `neuroCombat` | Multi-site batch-effect harmonization |
+
+### One-time atlas download
+
+`visualize.py` uses the **AAL SPM12 atlas** (via nilearn) to place brain regions at their correct MNI coordinates rather than using hardcoded approximations.  The atlas (~15 MB) is downloaded automatically from `gin.cnrs.fr` the first time `train.py` is run and then cached to `~/nilearn_data/`.
+
+If your environment has an SSL certificate issue (common with some Python builds), run this once to fix it before training:
+
+```bash
+# Copy system CA certificates into the venv's certifi bundle
+cp /etc/ssl/certs/ca-certificates.crt \
+   "$(python3 -c 'import certifi; print(certifi.where())')"
+```
+
+Then verify the download works:
+
+```bash
+source .venv/bin/activate
+python3 -c "from nilearn import datasets; datasets.fetch_atlas_aal(version='SPM12'); print('OK')"
+```
+
+If the download still fails, `visualize.py` gracefully falls back to published MNI literature coordinates and continues without error.
 
 ---
 
@@ -233,11 +260,13 @@ python train.py
 On each run `train.py` will:
 
 1. **Prepare data** — call each source loader, which processes its raw files and writes a fresh CSV to `processed_data/` (`ppmi.csv`, `lab.csv`, `oasis3.csv`).
-2. **Merge** — align all three sources on their common canonical ASEG features and apply ComBat harmonization across sites (Age/Sex imputed for OASIS-3 rows).
-3. **Train** — fit the TabularTransformer and save the checkpoint to `checkpoints/combined.pt`.
-4. **Evaluate** — print a classification report and save attention maps to `attention_maps.png`.
+2. **Merge** — align all three sources on their common canonical ASEG features; impute Age/Sex for OASIS-3 rows (not in that export) from PPMI + Lab medians.
+3. **Split** — stratified 60/40 train/eval split.  ComBat harmonization is fit **on the training partition only** and applied as frozen parameters to the eval set, preventing any leakage of test-set statistics into preprocessing.
+4. **Train** — fit the TabularTransformer and save the checkpoint to `checkpoints/combined.pt` (includes model weights, `feature_cols`, fitted `StandardScaler`, and ComBat estimates for inference-time harmonization).
+5. **Evaluate** — print a classification report showing HC/PD counts and per-class precision / recall / F1.
+6. **Visualize** — extract per-region attention weights, rank all features, and call `visualize.py` to produce brain maps in `attention_analysis/`.
 
-OASIS-3 data is included automatically once the download script has been run; if the stats files are absent the run continues on PPMI + Lab only.
+OASIS-3 data is included automatically once the ASEG CSV is present; if absent the run continues on PPMI + Lab only.
 
 ---
 
@@ -260,9 +289,29 @@ OASIS-3 data is included automatically once the download script has been run; if
 
 ---
 
+## Brain Visualization (`visualize.py`)
+
+After each training run, `visualize.py` is called automatically and writes two images to `attention_analysis/`:
+
+| File | Description |
+|------|-------------|
+| `attention_brain.png` | Glass brain (sagittal · axial · coronal · front views).  Each ASEG structure is rendered as a bubble at its MNI coordinate; **bubble size and colour** (plasma scale: purple → yellow) both encode the mean attention score that region received across all test subjects and transformer layers. |
+| `attention_ranking.png` | Horizontal bar chart of the top-30 features ranked by mean attention.  Red bars are structures shown on the glass brain; blue bars are global summary volumes or demographic features with no single anatomical location. |
+
+**Coordinate source:** region coordinates are computed as the centre-of-mass of each structure in the AAL SPM12 atlas (downloaded once by nilearn).  Structures not in AAL (ventricles, corpus callosum, WM hypointensities) use published MNI literature values.  The glass brain title states which source was used.
+
+**Inference reuse:** `visualize.py` can also be called standalone from a notebook:
+
+```python
+from visualize import visualize_attention
+visualize_attention(ranked_features, out_dir="my_output", top_n_bar=30)
+```
+
+---
+
 ## Attention-Based Region Ranking
 
-After fine-tuning, `src/attention.py` extracts per-layer, per-head attention weights from the `[CLS]` token to each feature token. The resulting heatmaps (`attention_maps.png`) show which brain regions the model attends to most when classifying HC vs PD subjects, providing an interpretable ranking of diagnostic importance across the 64 ASEG regions and bilateral cortical parcels.
+After training, `src/attention.py` extracts per-layer attention weights averaged over all test subjects.  `print_attention_ranking()` prints a ranked table and returns the scores as a list of `(feature_name, score)` tuples, which `train.py` passes directly to `visualize.py` for the brain map outputs.  The heatmaps in `attention_maps.png` show the full token × token attention matrix for representative HC and PD subjects across all transformer layers.
 
 ```mermaid
 graph TD
